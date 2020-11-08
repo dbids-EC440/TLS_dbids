@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <stdint.h>
+#include <stdio.h>
 
 //Page struct for memory management
 struct page 
@@ -146,21 +147,169 @@ extern int tls_destroy()
     return FAILURE;   
 }
 
+//protect function allows no reading, writing, or executing from the pages
+void tls_protect(struct page *p)
+{
+    if (mprotect((void *) p->address, pageSize, PROT_NONE))
+    {
+        fprintf(stderr, "tls_protect: could not protect page\n");
+        exit(1);
+    }
+}
+
+//Unprotect function which allows reading or writing to individual pages.
+//I added the readWrite int to allow for only writing to or reading from the pages depending
+void tls_unprotect(struct page *p, const int readWrite)
+{
+    if (mprotect((void *) p->address, pageSize, readWrite)) 
+    {
+        fprintf(stderr, "tls_unprotect: could not unprotect page\n");
+        exit(1);
+    }
+}
+
 //Reads length bytes starting at memory location pointed to by buffer, and writes them to LSA
 extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
 {
+    int i;
+    pthread_t threadID = pthread_self();
+
+    //Check that there is a LSA for this thread
+    if (!LSA_array[threadID])
+        return FAILURE;
+
+    struct LSA* threadLSA = LSA_array[threadID];
+
+    //Check that the function didn't ask to write more data than LSA can hold
+    if ((offset + length) > threadLSA->size)
+        return FAILURE;
     
+    //Change the protection on the whole LSA to be able to write to it
+    for (i = 0; i < threadLSA->pageNum; i++)
+    {
+        tls_unprotect(threadLSA->pages[i], PROT_WRITE);
+    }
+    
+    //Perform the write operation
+    int cnt, idx;
+    char* dst = NULL;
+    for (cnt= 0, idx= offset; idx< (offset + length); ++cnt, ++idx) 
+    {
+        struct page *p, *copy;
+        unsigned int pn, poff;
+
+        //Detemine page number in LSA, page offset, and the page itself
+        pn = idx / pageSize;
+        poff = idx % pageSize;
+        p = threadLSA->pages[pn];
+        
+        /* If this page is shared, create a private copy (COW) */
+        if (p->ref_count> 1) 
+        {
+           //copy existing page
+           copy = (struct page *) calloc(1, sizeof(struct page));
+           copy->address = (uintptr_t) mmap(0, pageSize, PROT_WRITE, MAP_ANON | MAP_PRIVATE, 0, 0);
+           copy->ref_count= 1;
+           threadLSA->pages[pn] = copy; 
+            
+            //update original page
+            p->ref_count--;
+            tls_protect(p);
+            p = copy;
+        }
+        
+        //Then get the dst byte and set it equal to the corresponding char in buffer
+        dst= ((char *) p->address) + poff;
+        *dst = buffer[cnt];    
+    }
+
+    //Reprotect all pages in the threads TLS
+    for (i = 0; i < threadLSA->pageNum; i++)
+    {
+        tls_protect(threadLSA->pages[i]);
+    }
+
     return SUCCESS;
 }
 
 //Reads length bytes from LSA at offset and writes them to buffer
 extern int tls_read(unsigned int offset, unsigned int length, char *buffer)
 {
+    int i;
+    pthread_t threadID = pthread_self();
+
+    //Check that there is a LSA for this thread
+    if (!LSA_array[threadID])
+        return FAILURE;
+
+    struct LSA* threadLSA = LSA_array[threadID];
+
+    //Check that the function didn't ask to read more data than LSA can hold
+    if ((offset + length) > threadLSA->size)
+        return FAILURE;
     
+    //Change the protection on the whole LSA to be able to read from it
+    for (i = 0; i < threadLSA->pageNum; i++)
+    {
+        tls_unprotect(threadLSA->pages[i], PROT_READ);
+    }
+
+    //Perform the read operation (from class)
+    int cnt, idx;
+    char* src = NULL;
+    for (cnt = 0, idx = offset; idx < (offset + length); ++cnt, ++idx) 
+    {
+        struct page *p;
+        unsigned int pn, poff;
+        
+        pn= idx / pageSize;
+        poff= idx % pageSize;
+        
+        p = threadLSA->pages[pn];
+        src = ((char *) p->address) + poff;
+        
+        buffer[cnt] = *src;
+    }
+
+    //Reprotect all pages in the threads TLS
+    for (i = 0; i < threadLSA->pageNum; i++)
+    {
+        tls_protect(threadLSA->pages[i]);
+    }
+
     return SUCCESS;
 }
 
+//Clones the LSA of target thread tid
 extern int tls_clone(pthread_t tid)
 {
+    int i;
+    pthread_t currentTID = pthread_self();
+
+    //Check that there is not a LSA for this thread
+    if (LSA_array[currentTID])
+        return FAILURE;
+
+    //Check that the target thread has an LSA
+    if (!LSA_array[tid])
+        return FAILURE;
+
+    //Create the struct to hold the LSA for the thread
+    struct LSA* currentLSA = LSA_array[currentTID];
+    currentLSA->tid = currentTID;
+
+    //Do the cloning of the LSA
+    struct LSA* targetLSA = LSA_array[tid];
+    currentLSA->pageNum = targetLSA->pageNum;
+    currentLSA->size = targetLSA->size;
+    currentLSA->pages = targetLSA->pages;
+    for (i = 0; i < targetLSA->pageNum; i++)
+    {
+        (currentLSA->pages[i]->ref_count)++;
+    }
+
+    //Add the LSA to the global array
+    LSA_array[currentTID] = currentLSA;
+
     return SUCCESS;
 }
