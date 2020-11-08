@@ -40,17 +40,30 @@ int pageSize = 0;
 //Function to handle SIGSEGV and SIGBUS when they are caused by TLS
 void pageFaultHandler(int sig, siginfo_t *si, void *context)
 {
-    //unsigned int pageFault = ((unsigned int) si->si_addr & ~(pageSize - 1));
+    uintptr_t pageFault = ((uintptr_t) si->si_addr & ~(pageSize - 1));
 
     //Check whether this is a tls or real segfault
-    //if (tls segfault)
-        // brute force scan through all allocated TLS regions
-            //for each page:
-            /*if (page->address == pageFault) {pthread_exit(NULL);}*/
-    //else
-        signal(SIGSEGV, SIG_DFL);
-        signal(SIGBUS, SIG_DFL);
-        raise(sig);   
+    int i, j;
+    for (i=0; i < NUM_THREADS; i++)
+    {
+        if (LSA_array[i])
+        {
+            for (j = 0; j < LSA_array[i]->pageNum; j++)
+            {
+                struct page* p = LSA_array[i]->pages[j];
+                if (p->address == pageFault)
+                {
+                    //If this is a tls related segfault, terminate the thread that caused it
+                    pthread_exit(NULL);
+                }
+            }
+        }
+    }
+    
+    //else install default handlers and reraise the signal
+    signal(SIGSEGV, SIG_DFL);
+    signal(SIGBUS, SIG_DFL);
+    raise(sig);       
 }
 
 //Function which initializes the needed parameters on the first run
