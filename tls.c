@@ -1,7 +1,10 @@
 //Devin Bidstrup EC440 Project 4
 
+//#define _POSIX_C_SOURCE 200809L //needed for the sa_sigaction part of sigaction
+
 #define SUCCESS 0
 #define FAILURE -1
+#define NUM_THREADS 128
 
 #include <pthread.h>
 #include <sys/mman.h>
@@ -10,69 +13,142 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <signal.h>
+#include <stdint.h>
+
+//Page struct for memory management
+struct page 
+{
+    uintptr_t address;       /* start address of page */
+    int ref_count;               /* counter for shared pages */
+};
 
 //Global struct to local storage area information
 struct LSA
 {
-    void* baseAddress;
-    unsigned int size;
+    pthread_t tid;
+    unsigned int size;          /* size in bytes */
+    unsigned int pageNum;       /* number of pages */
+    struct page** pages;        /* array of pointers to pages */
 };
 
 //Instantiate the struct for this thread
-struct LSA threadLSA;
+struct LSA* LSA_array[NUM_THREADS];
+int pageSize = 0;
+
+//Function to handle SIGSEGV and SIGBUS when they are caused by TLS
+void pageFaultHandler(int sig, siginfo_t *si, void *context)
+{
+    //unsigned int pageFault = ((unsigned int) si->si_addr & ~(pageSize - 1));
+
+    //Check whether this is a tls or real segfault
+    //if (tls segfault)
+        // brute force scan through all allocated TLS regions
+            //for each page:
+            /*if (page->address == pageFault) {pthread_exit(NULL);}*/
+    //else
+        signal(SIGSEGV, SIG_DFL);
+        signal(SIGBUS, SIG_DFL);
+        raise(sig);   
+}
+
+//Function which initializes the needed parameters on the first run
+void tls_init()
+{
+    struct sigaction sigact;
+
+    /* get the size of a page */
+    pageSize = getpagesize();
+
+    /* install the signal handler for page faults (SIGSEGV, SIGBUS) */
+    sigemptyset(&sigact.sa_mask);
+    sigact.sa_flags = SA_SIGINFO;
+    sigact.sa_sigaction = pageFaultHandler;
+
+    sigaction(SIGBUS, &sigact, NULL);
+    sigaction(SIGSEGV, &sigact, NULL);
+}
 
 //Create a LSA that can hold at least size bytes
 extern int tls_create(unsigned int size)
 {    
-    /*  Create the TLS with the following parameters
+     /*  Create the TLS with the following parameters per page
     PROT_NONE       : Pages may not be accessed
     MAP_PRIVATE     : Create a private CoW mapping
     MAP_ANONYMOUS   : The mapping is not backed by any file, contents intialized to zero.
-                      Ignores the fd and offset arguments.
-    */
-    threadLSA.baseAddress = mmap(NULL, (size_t) size, PROT_NONE, (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
-
-    //Check return value of mmap
-    if (threadLSA.baseAddress != MAP_FAILED)
+                      Ignores the fd and offset arguments.*/
+    
+    // Initialize the tls library if needed
+    static int initialize = 1;
+    if (initialize)
     {
-        threadLSA.size = size;
+        tls_init();
+        initialize = 0;
+    }
+
+    pthread_t threadID = pthread_self();
+
+    //Error Handling, check if size > 0 and if thread has an LSA already
+    if (size <= 0 ||  LSA_array[threadID]!= NULL)
+    {
+        return FAILURE;
+    }
+    
+    //Allocate the TLS for this thread using malloc and initialize
+    struct LSA* threadLSA = (struct LSA*) malloc(sizeof(struct LSA));
+    threadLSA->size = size;
+    threadLSA->pageNum = size / pageSize + (size % pageSize != 0); //ceiling the pageNum as needed
+    threadLSA->tid = threadID;
+    
+    //Allocate pages array and then individual pages
+    threadLSA->pages = (struct page**) calloc(threadLSA->pageNum, sizeof(struct page*));
+    int i;
+    for (i = 0; i < threadLSA->pageNum; i++)
+    {
+        struct page* p = (struct page*) malloc(sizeof(struct page));
+        //Use mmap to map the page to a given place in memory.
+        p->address = (uintptr_t) mmap(0, pageSize, 0, (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
+        if (p->address == (uintptr_t) MAP_FAILED)
+            return FAILURE;
+        p->ref_count = 1;
+        threadLSA->pages[i] = p;
+    }
+
+    //Add this thread mapping to the global LSA array
+    LSA_array[threadID] = threadLSA;
+
+    return SUCCESS;
+}
+
+//Destroys the thread local storage
+extern int tls_destroy()
+{
+    pthread_t threadID = pthread_self();
+    if (LSA_array[threadID])
+    {
+        int i;
+        for (i = 0; i < LSA_array[threadID]->pageNum; i++)
+        {
+            //Check if page is shared, if not free, else decrement ref_count
+            if (LSA_array[threadID]->pages[i]->ref_count == 1)
+                free(LSA_array[threadID]->pages[i]);
+            else
+                --(LSA_array[threadID]->pages[i]->ref_count);
+        }
+        free(LSA_array[threadID]->pages);
+        LSA_array[threadID]->size = 0;
+        LSA_array[threadID]->pageNum = 0;
+        LSA_array[threadID]->tid = 0;
+        free(LSA_array[threadID]);
         return SUCCESS;
     }
 
-    return FAILURE;
+    return FAILURE;   
 }
 
 //Reads length bytes starting at memory location pointed to by buffer, and writes them to LSA
 extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
 {
-    //Check that the function didn't ask to write more data than LSA can hold
-    if ((offset + length) > threadLSA.size)
-        return FAILURE;
-
-    //Change the protection on the whole LSA to be able to write to it
-    mprotect(threadLSA.baseAddress, threadLSA.size, PROT_WRITE);
-
-    //Open a file descriptor to write to LSA at baseAddress
-    int writeFD = open((char*) threadLSA.baseAddress, O_WRONLY);
-    
-    //Check that the open command succeeded
-    if (writeFD == -1)
-        return FAILURE;
-
-    //Move the writeFD to baseAddress + offset
-    lseek(writeFD, offset, SEEK_CUR);
-
-    //Write those contents to the TLA at baseAddress + offset
-    size_t writeReturnVal = write(writeFD, (void*) buffer, (size_t) length);
-    
-    //Check that writing succeeded
-    if(writeReturnVal == -1)
-        return FAILURE;
-
-    close(writeFD);
-
-    //Change the protection on the whole LSA so that no thread can change it
-    mprotect(threadLSA.baseAddress, threadLSA.size, PROT_NONE);
     
     return SUCCESS;
 }
@@ -80,62 +156,8 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
 //Reads length bytes from LSA at offset and writes them to buffer
 extern int tls_read(unsigned int offset, unsigned int length, char *buffer)
 {
-    //Check that the function didn't ask to write more data than LSA can hold
-    if ((offset + length) > threadLSA.size)
-        return FAILURE;
-
-    //Change the protection on the whole LSA to be able to read from it
-    mprotect(threadLSA.baseAddress, threadLSA.size, PROT_READ);
-    
-    //Open a file descriptor to read from LSA
-    //We need to read from the LSA explicitly here to get the contents in the right format (char*)
-    int readFD = open((char*) threadLSA.baseAddress, O_RDONLY);
-
-    //Open a file descriptor to write to the buffer
-    int writeFD = open(buffer, O_WRONLY);
-
-    //Check that the open command succeeded
-    if ((readFD == -1) | (writeFD == -1))
-        return FAILURE;
-
-    //Move the readFD to baseAddress + offset
-    lseek(readFD, offset, SEEK_CUR);
-
-    //Read the contents of the LSA and store in contentsBuffer
-    char* contentsBuffer = (char*) malloc(length);
-    size_t readReturnVal = read(readFD, contentsBuffer, (size_t) length);
-
-    //Check that reading succeeded
-    if (readReturnVal == -1)
-        return FAILURE;
-    
-    size_t writeReturnVal = write(writeFD, contentsBuffer,(size_t) length);
-
-    //Check that reading succeeded
-    if (writeReturnVal == -1)
-        return FAILURE;
-
-    close(readFD);
-    close(writeFD);
-    free(contentsBuffer);
-    //Change the protection on the whole LSA so that no thread can change it
-    mprotect(threadLSA.baseAddress, threadLSA.size, PROT_NONE);
     
     return SUCCESS;
-}
-
-//Destroys the thread local storage
-extern int tls_destroy()
-{
-    if (threadLSA.baseAddress)
-    {
-        threadLSA.size = 0;
-        free(threadLSA.baseAddress);
-        return SUCCESS;
-    }
-
-    return FAILURE;
-    
 }
 
 extern int tls_clone(pthread_t tid)
