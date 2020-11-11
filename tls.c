@@ -16,6 +16,8 @@
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include <limits.h>
 
 //Page struct for memory management
 struct page 
@@ -33,9 +35,100 @@ struct LSA
     struct page** pages;        /* array of pointers to pages */
 };
 
-//Instantiate the struct for this thread
-struct LSA* LSA_array[NUM_THREADS];
+struct hash_element
+{
+    struct LSA* lsa;
+    struct hash_element* next;
+};
+
+//Instantiate the hash table for all the threads
+struct hash_element* hashTable[NUM_THREADS];
 int pageSize = 0;
+
+//Returns the hash value to index into the hash table
+unsigned int computeHash(pthread_t tid)
+{
+    return (unsigned int) tid % 127; //Note that 127 was hardcoded here as it is prime
+}
+
+//Finds a lsa for the correct pthread_t and returns a pointer to it
+//If not found it returns a NULL pointer
+struct hash_element* findHashElement(pthread_t tid)
+{
+    int hashValue = computeHash(tid);
+
+    //First check to see if there is an element at the hash
+    if (hashTable[hashValue] != NULL)
+    {
+        struct hash_element* curr = hashTable[hashValue];
+        
+        //Find the element
+        while (hashTable[hashValue]->lsa->tid != tid && curr != NULL)
+        {
+            curr = curr->next;
+        }
+        
+        return curr;
+    }
+
+
+    return NULL;
+}
+
+//Inserts a lsa into the hash table at the head of the LL
+int insertHashElement(struct LSA* lsa)
+{
+    int hashValue = computeHash(lsa->tid);
+
+    //Check to see if there is an existing hash element at that index in the table
+    if (hashTable[hashValue] != NULL)
+    {
+        struct hash_element* nextElement = hashTable[hashValue];
+        hashTable[hashValue] = (struct hash_element*) malloc(sizeof(struct hash_element));
+        hashTable[hashValue]->next = nextElement;
+        hashTable[hashValue]->lsa = lsa;
+        return SUCCESS;
+    }
+    else
+    {
+        hashTable[hashValue] = (struct hash_element*) malloc(sizeof(struct hash_element));
+        hashTable[hashValue]->next = NULL;
+        hashTable[hashValue]->lsa = lsa;
+        return SUCCESS;
+    }
+    
+    return FAILURE;
+}
+
+//Removes a lsa from the hash table and returns that hash element or NULL on error
+struct hash_element* removeHashElement(pthread_t tid)
+{
+    int hashValue = computeHash(tid);
+
+    //First check to see if there is an element at the hash
+    if (hashTable[hashValue] != NULL)
+    {
+        struct hash_element* prev = NULL;
+        struct hash_element* curr = hashTable[hashValue];
+        struct hash_element* next = hashTable[hashValue] -> next;
+        
+        //Find the element to remove
+        while (hashTable[hashValue]->lsa->tid != tid && curr != NULL)
+        {
+            prev = curr;
+            curr = next;
+            next = curr->next;
+        }
+
+        //Then remove the element
+        if(prev)
+            prev->next = next;
+        
+        return curr;
+    }
+
+    return NULL;
+}
 
 //Function to handle SIGSEGV and SIGBUS when they are caused by TLS
 void pageFaultHandler(int sig, siginfo_t *si, void *context)
@@ -46,17 +139,26 @@ void pageFaultHandler(int sig, siginfo_t *si, void *context)
     int i, j;
     for (i=0; i < NUM_THREADS; i++)
     {
-        if (LSA_array[i])
+        if (hashTable[i])
         {
-            for (j = 0; j < LSA_array[i]->pageNum; j++)
+            struct hash_element* hash_iterator = hashTable[i];
+            
+            //Iterate through all the elements at that value in the hash table
+            while (hash_iterator)
             {
-                struct page* p = LSA_array[i]->pages[j];
-                if (p->address == pageFault)
+                //Scan the pages of the lsa for the matching address
+                for (j = 0; j < hash_iterator->lsa->pageNum; j++)
                 {
-                    //If this is a tls related segfault, terminate the thread that caused it
-                    pthread_exit(NULL);
+                    struct page* p = hash_iterator->lsa->pages[j];
+                    if (p->address == pageFault)
+                    {
+                        //If this is a tls related segfault, terminate the thread that caused it
+                        pthread_exit(NULL);
+                    }
                 }
-            }
+
+                hash_iterator = hash_iterator->next;
+            }             
         }
     }
     
@@ -81,6 +183,14 @@ void tls_init()
 
     sigaction(SIGBUS, &sigact, NULL);
     sigaction(SIGSEGV, &sigact, NULL);
+
+    //Define the elements of the hash table as all NULL pointers
+    /*int i;
+    for (i = 0; i < NUM_THREADS; i++)
+    {
+        hashTable[i]->lsa = NULL;
+        hashTable[i]->next = NULL;
+    }*/
 }
 
 //Create a LSA that can hold at least size bytes
@@ -102,8 +212,9 @@ extern int tls_create(unsigned int size)
 
     pthread_t threadID = pthread_self();
 
+
     //Error Handling, check if size > 0 and if thread has an LSA already
-    if (size <= 0 ||  LSA_array[threadID]!= NULL)
+    if (size <= 0 ||  findHashElement(threadID)!= NULL)
     {
         return FAILURE;
     }
@@ -129,7 +240,13 @@ extern int tls_create(unsigned int size)
     }
 
     //Add this thread mapping to the global LSA array
-    LSA_array[threadID] = threadLSA;
+    int error = insertHashElement(threadLSA);
+
+    //Check that insert was successful
+    if (error == FAILURE)
+    {
+        return FAILURE;
+    }
 
     return SUCCESS;
 }
@@ -138,22 +255,29 @@ extern int tls_create(unsigned int size)
 extern int tls_destroy()
 {
     pthread_t threadID = pthread_self();
-    if (LSA_array[threadID])
+    struct hash_element* removedHash = removeHashElement(threadID);
+
+    //Check that the tid exists in the hash
+    if (removedHash != NULL)
     {
+        //Deal with individual pages
         int i;
-        for (i = 0; i < LSA_array[threadID]->pageNum; i++)
+        for (i = 0; i < removedHash->lsa->pageNum; i++)
         {
             //Check if page is shared, if not free, else decrement ref_count
-            if (LSA_array[threadID]->pages[i]->ref_count == 1)
-                free(LSA_array[threadID]->pages[i]);
+            if (removedHash->lsa->pages[i]->ref_count == 1)
+                free(removedHash->lsa->pages[i]);
             else
-                --(LSA_array[threadID]->pages[i]->ref_count);
+                --(removedHash->lsa->pages[i]->ref_count);
         }
-        free(LSA_array[threadID]->pages);
-        LSA_array[threadID]->size = 0;
-        LSA_array[threadID]->pageNum = 0;
-        LSA_array[threadID]->tid = 0;
-        free(LSA_array[threadID]);
+        free(removedHash->lsa->pages);
+
+        //Deal with LSA
+        free(removedHash->lsa);
+
+        //Deal with hash element
+        free(removedHash);
+
         return SUCCESS;
     }
 
@@ -187,12 +311,13 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
     int i;
     pthread_t threadID = pthread_self();
 
+    //Get the LSA we are writing to
+    struct LSA* threadLSA = findHashElement(threadID)->lsa;
+
     //Check that there is a LSA for this thread
-    if (!LSA_array[threadID])
+    if ( threadLSA == NULL)
         return FAILURE;
-
-    struct LSA* threadLSA = LSA_array[threadID];
-
+    
     //Check that the function didn't ask to write more data than LSA can hold
     if ((offset + length) > threadLSA->size)
         return FAILURE;
@@ -206,7 +331,7 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
     //Perform the write operation
     int cnt, idx;
     char* dst = NULL;
-    for (cnt= 0, idx= offset; idx< (offset + length); ++cnt, ++idx) 
+    for (cnt= 0, idx= offset; idx < (offset + length); ++cnt, ++idx) 
     {
         struct page *p, *copy;
         unsigned int pn, poff;
@@ -220,10 +345,10 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
         if (p->ref_count> 1) 
         {
            //copy existing page
-           copy = (struct page *) calloc(1, sizeof(struct page));
+           copy = (struct page *) malloc(sizeof(struct page));
            copy->address = (uintptr_t) mmap(0, pageSize, PROT_WRITE, MAP_ANON | MAP_PRIVATE, 0, 0);
            copy->ref_count= 1;
-           threadLSA->pages[pn] = copy; 
+           threadLSA->pages[pn] = copy;
             
             //update original page
             p->ref_count--;
@@ -232,7 +357,7 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
         }
         
         //Then get the dst byte and set it equal to the corresponding char in buffer
-        dst= ((char *) p->address) + poff;
+        dst = ((char *) p->address) + poff;
         *dst = buffer[cnt];    
     }
 
@@ -251,11 +376,12 @@ extern int tls_read(unsigned int offset, unsigned int length, char *buffer)
     int i;
     pthread_t threadID = pthread_self();
 
-    //Check that there is a LSA for this thread
-    if (!LSA_array[threadID])
-        return FAILURE;
+    //Get the LSA we are writing to
+    struct LSA* threadLSA = findHashElement(threadID)->lsa;
 
-    struct LSA* threadLSA = LSA_array[threadID];
+    //Check that there is a LSA for this thread
+    if (threadLSA == NULL)
+        return FAILURE;
 
     //Check that the function didn't ask to read more data than LSA can hold
     if ((offset + length) > threadLSA->size)
@@ -299,20 +425,25 @@ extern int tls_clone(pthread_t tid)
     int i;
     pthread_t currentTID = pthread_self();
 
+    //Get the currentLSA
+    struct LSA* currentLSA = findHashElement(currentTID)->lsa;
+
+    //Get the targetLSA
+    struct LSA* targetLSA = findHashElement(tid)->lsa;
+
     //Check that there is not a LSA for this thread
-    if (LSA_array[currentTID])
+    if (currentLSA != NULL)
         return FAILURE;
 
     //Check that the target thread has an LSA
-    if (!LSA_array[tid])
+    if (targetLSA == NULL)
         return FAILURE;
 
     //Create the struct to hold the LSA for the thread
-    struct LSA* currentLSA = LSA_array[currentTID];
     currentLSA->tid = currentTID;
 
     //Do the cloning of the LSA
-    struct LSA* targetLSA = LSA_array[tid];
+    
     currentLSA->pageNum = targetLSA->pageNum;
     currentLSA->size = targetLSA->size;
     currentLSA->pages = targetLSA->pages;
@@ -322,7 +453,13 @@ extern int tls_clone(pthread_t tid)
     }
 
     //Add the LSA to the global array
-    LSA_array[currentTID] = currentLSA;
+    int error = insertHashElement(currentLSA);
+
+    //Check that insert was successful
+    if (error == FAILURE)
+    {
+        return FAILURE;
+    }
 
     return SUCCESS;
 }
