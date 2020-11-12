@@ -312,11 +312,13 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
     pthread_t threadID = pthread_self();
 
     //Get the LSA we are writing to
-    struct LSA* threadLSA = findHashElement(threadID)->lsa;
+    struct hash_element* threadHash = findHashElement(threadID);
 
     //Check that there is a LSA for this thread
-    if ( threadLSA == NULL)
+    if (threadHash == NULL)
         return FAILURE;
+
+    struct LSA* threadLSA = threadHash->lsa;
     
     //Check that the function didn't ask to write more data than LSA can hold
     if ((offset + length) > threadLSA->size)
@@ -377,12 +379,14 @@ extern int tls_read(unsigned int offset, unsigned int length, char *buffer)
     pthread_t threadID = pthread_self();
 
     //Get the LSA we are writing to
-    struct LSA* threadLSA = findHashElement(threadID)->lsa;
+    struct hash_element* threadHash = findHashElement(threadID);
 
     //Check that there is a LSA for this thread
-    if (threadLSA == NULL)
+    if (threadHash == NULL)
         return FAILURE;
 
+    struct LSA* threadLSA = threadHash->lsa;
+    
     //Check that the function didn't ask to read more data than LSA can hold
     if ((offset + length) > threadLSA->size)
         return FAILURE;
