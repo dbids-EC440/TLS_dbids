@@ -273,12 +273,9 @@ extern int tls_destroy()
             else
                 --(removedHash->lsa->pages[i]->ref_count);
         }
-        free(removedHash->lsa->pages);
 
-        //Deal with LSA
+        //Free the hash element and LSA
         free(removedHash->lsa);
-
-        //Deal with hash element
         free(removedHash);
 
         return SUCCESS;
@@ -347,7 +344,7 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
         p = threadLSA->pages[pn];
         
         /* If this page is shared, create a private copy (COW) */
-        if (p->ref_count> 1) 
+        if (p->ref_count > 1) 
         {
            //copy existing page
            copy = (struct page *) malloc(sizeof(struct page));
@@ -451,13 +448,21 @@ extern int tls_clone(pthread_t tid)
     currentHash->tid = currentTID;
 
     //Do the cloning of the LSA
-    currentHash->lsa = targetLSA;
+    currentHash->lsa = (struct LSA*) malloc(sizeof(struct LSA));
+    currentHash->lsa->pageNum = targetLSA->pageNum;
+    currentHash->lsa->size = targetLSA->size;
+    currentHash->lsa->pages = targetLSA->pages;
+    int i;
+    for (i = 0; i < targetLSA->pageNum; i++)
+    {
+        (targetLSA->pages[i]->ref_count)++;
+    }
 
     //Add the hash element to the global hash table
     int error = insertHashElement(currentHash);
 
     //Check that insert was successful
-    if (error == FAILURE);
+    if (error == FAILURE)
     {
         return FAILURE;
     }

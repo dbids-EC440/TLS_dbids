@@ -1,4 +1,3 @@
-#override CC := gcc $(CC)
 override CFLAGS := -Wall -Werror -std=gnu11 -pedantic -O0 -g $(CFLAGS) # or whatever your build needs
 override LDLIBS := -lpthread $(LDLIBS)
 
