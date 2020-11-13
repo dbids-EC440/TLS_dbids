@@ -29,7 +29,6 @@ struct page
 //Global struct to local storage area information
 struct LSA
 {
-    pthread_t tid;
     unsigned int size;          /* size in bytes */
     unsigned int pageNum;       /* number of pages */
     struct page** pages;        /* array of pointers to pages */
@@ -37,6 +36,7 @@ struct LSA
 
 struct hash_element
 {
+    pthread_t tid;
     struct LSA* lsa;
     struct hash_element* next;
 };
@@ -63,7 +63,7 @@ struct hash_element* findHashElement(pthread_t tid)
         struct hash_element* curr = hashTable[hashValue];
         
         //Find the element
-        while (hashTable[hashValue]->lsa->tid != tid && curr != NULL)
+        while (hashTable[hashValue]->tid != tid && curr != NULL)
         {
             curr = curr->next;
         }
@@ -76,24 +76,23 @@ struct hash_element* findHashElement(pthread_t tid)
 }
 
 //Inserts a lsa into the hash table at the head of the LL
-int insertHashElement(struct LSA* lsa)
+int insertHashElement(struct hash_element* threadHash)
 {
-    int hashValue = computeHash(lsa->tid);
+    pthread_t threadID = pthread_self();
+    int hashValue = computeHash(threadID);
 
     //Check to see if there is an existing hash element at that index in the table
     if (hashTable[hashValue] != NULL)
     {
         struct hash_element* nextElement = hashTable[hashValue];
-        hashTable[hashValue] = (struct hash_element*) malloc(sizeof(struct hash_element));
+        hashTable[hashValue] = threadHash;
         hashTable[hashValue]->next = nextElement;
-        hashTable[hashValue]->lsa = lsa;
         return SUCCESS;
     }
     else
     {
-        hashTable[hashValue] = (struct hash_element*) malloc(sizeof(struct hash_element));
+        hashTable[hashValue] = threadHash;
         hashTable[hashValue]->next = NULL;
-        hashTable[hashValue]->lsa = lsa;
         return SUCCESS;
     }
     
@@ -113,7 +112,7 @@ struct hash_element* removeHashElement(pthread_t tid)
         struct hash_element* next = hashTable[hashValue] -> next;
         
         //Find the element to remove
-        while (hashTable[hashValue]->lsa->tid != tid && curr != NULL)
+        while (hashTable[hashValue]->tid != tid && curr != NULL)
         {
             prev = curr;
             curr = next;
@@ -223,7 +222,6 @@ extern int tls_create(unsigned int size)
     struct LSA* threadLSA = (struct LSA*) malloc(sizeof(struct LSA));
     threadLSA->size = size;
     threadLSA->pageNum = size / pageSize + (size % pageSize != 0); //ceiling the pageNum as needed
-    threadLSA->tid = threadID;
     
     //Allocate pages array and then individual pages
     threadLSA->pages = (struct page**) calloc(threadLSA->pageNum, sizeof(struct page*));
@@ -239,8 +237,13 @@ extern int tls_create(unsigned int size)
         threadLSA->pages[i] = p;
     }
 
-    //Add this thread mapping to the global LSA array
-    int error = insertHashElement(threadLSA);
+    //Create a hash_element for this LSA
+    struct hash_element* threadHash = (struct hash_element*) malloc(sizeof(struct hash_element));
+    threadHash->lsa = threadLSA;
+    threadHash->tid = threadID;
+
+    //Add the hash element to the global hash table
+    int error = insertHashElement(threadHash);
 
     //Check that insert was successful
     if (error == FAILURE)
@@ -426,41 +429,35 @@ extern int tls_read(unsigned int offset, unsigned int length, char *buffer)
 //Clones the LSA of target thread tid
 extern int tls_clone(pthread_t tid)
 {
-    int i;
     pthread_t currentTID = pthread_self();
 
-    //Get the currentLSA
-    struct LSA* currentLSA = findHashElement(currentTID)->lsa;
+    //Get the current hash element
+    struct hash_element* currentHash = findHashElement(currentTID);
 
     //Get the targetLSA
-    struct LSA* targetLSA = findHashElement(tid)->lsa;
+    struct hash_element* targetHash = findHashElement(tid);
+    struct LSA* targetLSA = targetHash->lsa;
 
     //Check that there is not a LSA for this thread
-    if (currentLSA != NULL)
+    if (currentHash != NULL)
         return FAILURE;
 
     //Check that the target thread has an LSA
     if (targetLSA == NULL)
         return FAILURE;
 
-    //Create the struct to hold the LSA for the thread
-    currentLSA->tid = currentTID;
+    //Create the struct to hold the hash_element for the thread
+    currentHash = (struct hash_element*) malloc(sizeof(struct hash_element));
+    currentHash->tid = currentTID;
 
     //Do the cloning of the LSA
-    
-    currentLSA->pageNum = targetLSA->pageNum;
-    currentLSA->size = targetLSA->size;
-    currentLSA->pages = targetLSA->pages;
-    for (i = 0; i < targetLSA->pageNum; i++)
-    {
-        (currentLSA->pages[i]->ref_count)++;
-    }
+    currentHash->lsa = targetLSA;
 
-    //Add the LSA to the global array
-    int error = insertHashElement(currentLSA);
+    //Add the hash element to the global hash table
+    int error = insertHashElement(currentHash);
 
     //Check that insert was successful
-    if (error == FAILURE)
+    if (error == FAILURE);
     {
         return FAILURE;
     }
