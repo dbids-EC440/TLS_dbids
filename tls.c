@@ -296,6 +296,8 @@ void tls_protect(struct page *p)
 
 //Unprotect function which allows reading or writing to individual pages.
 //I added the readWrite int to allow for only writing to or reading from the pages depending
+//readWrite == 2 -> write (PROT_WRITE)
+//readWrite == 1 -> read  (PROT_READ)
 void tls_unprotect(struct page *p, const int readWrite)
 {
     if (mprotect((void *) p->address, pageSize, readWrite)) 
@@ -329,11 +331,11 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
     {
         tls_unprotect(threadLSA->pages[i], PROT_WRITE);
     }
-    
+
     //Perform the write operation
     int cnt, idx;
     char* dst = NULL;
-    for (cnt= 0, idx= offset; idx < (offset + length); ++cnt, ++idx) 
+    for (cnt = 0, idx = offset; idx < (offset + length); ++cnt, ++idx) 
     {
         struct page *p, *copy;
         unsigned int pn, poff;
@@ -346,21 +348,28 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
         /* If this page is shared, create a private copy (COW) */
         if (p->ref_count > 1) 
         {
-           //copy existing page
-           copy = (struct page *) malloc(sizeof(struct page));
-           copy->address = (uintptr_t) mmap(0, pageSize, PROT_WRITE, MAP_ANON | MAP_PRIVATE, 0, 0);
-           copy->ref_count= 1;
-           threadLSA->pages[pn] = copy;
-            
+            //copy existing page
+            copy = (struct page *) malloc(sizeof(struct page));
+            copy->address = (uintptr_t) mmap(0, pageSize, PROT_WRITE, (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
+            copy->ref_count= 1;
+            //printf("copy->address: %zd\n", copy->address);
+            //printf("threadLSA->pages[pn]->address before: %zd\n", threadLSA->pages[pn]->address);
+            //printf("threadLSA contents before: %c\n", *((char *) threadLSA->pages[pn]->address));
+            threadLSA->pages[pn] = copy;
+            //printf("threadLSA->pages[pn]->address after: %zd\n", threadLSA->pages[pn]->address);
+            //printf("threadLSA contents after: %c\n", *((char *) threadLSA->pages[pn]->address));
             //update original page
             p->ref_count--;
+            //printf("p contents: %c\n", *((char *) p->address));
             tls_protect(p);
+            //printf("p->address before: %zd\n", p->address);
             p = copy;
+            //printf("p->address after: %zd\n", p->address);
         }
         
         //Then get the dst byte and set it equal to the corresponding char in buffer
         dst = ((char *) p->address) + poff;
-        *dst = buffer[cnt];    
+        *dst = buffer[cnt];  
     }
 
     //Reprotect all pages in the threads TLS
@@ -390,6 +399,7 @@ extern int tls_read(unsigned int offset, unsigned int length, char *buffer)
     //Check that the function didn't ask to read more data than LSA can hold
     if ((offset + length) > threadLSA->size)
         return FAILURE;
+        
     
     //Change the protection on the whole LSA to be able to read from it
     for (i = 0; i < threadLSA->pageNum; i++)
@@ -405,10 +415,10 @@ extern int tls_read(unsigned int offset, unsigned int length, char *buffer)
         struct page *p;
         unsigned int pn, poff;
         
-        pn= idx / pageSize;
-        poff= idx % pageSize;
-        
+        pn = idx / pageSize;
+        poff = idx % pageSize;
         p = threadLSA->pages[pn];
+        
         src = ((char *) p->address) + poff;
         
         buffer[cnt] = *src;
@@ -451,11 +461,12 @@ extern int tls_clone(pthread_t tid)
     currentHash->lsa = (struct LSA*) malloc(sizeof(struct LSA));
     currentHash->lsa->pageNum = targetLSA->pageNum;
     currentHash->lsa->size = targetLSA->size;
-    currentHash->lsa->pages = targetLSA->pages;
+    currentHash->lsa->pages = (struct page**) calloc(currentHash->lsa->pageNum, sizeof(struct page*));
     int i;
-    for (i = 0; i < targetLSA->pageNum; i++)
+    for (i = 0; i < currentHash->lsa->pageNum; i++)
     {
-        (targetLSA->pages[i]->ref_count)++;
+        currentHash->lsa->pages[i] = targetLSA->pages[i];
+        (currentHash->lsa->pages[i]->ref_count)++;
     }
 
     //Add the hash element to the global hash table
