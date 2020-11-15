@@ -4,7 +4,6 @@
 
 #define SUCCESS 0
 #define FAILURE -1
-#define NUM_THREADS 128
 
 #include <pthread.h>
 #include <sys/mman.h>
@@ -36,13 +35,13 @@ struct LSA
 
 struct hash_element
 {
-    pthread_t tid;
-    struct LSA* lsa;
-    struct hash_element* next;
+    pthread_t tid;              /* tid of the thread */
+    struct LSA* lsa;            /* lsa of the thread */
+    struct hash_element* next;  /* next hash element in the chain at a given index in the hash table */
 };
 
 //Instantiate the hash table for all the threads
-struct hash_element* hashTable[NUM_THREADS];
+struct hash_element* hashTable[127];
 int pageSize = 0;
 
 //Returns the hash value to index into the hash table
@@ -136,7 +135,7 @@ void pageFaultHandler(int sig, siginfo_t *si, void *context)
 
     //Check whether this is a tls or real segfault
     int i, j;
-    for (i=0; i < NUM_THREADS; i++)
+    for (i=0; i < 127; i++)
     {
         if (hashTable[i])
         {
@@ -172,9 +171,6 @@ void tls_init()
 {
     struct sigaction sigact;
 
-    /* get the size of a page */
-    pageSize = getpagesize();
-
     /* install the signal handler for page faults (SIGSEGV, SIGBUS) */
     sigemptyset(&sigact.sa_mask);
     sigact.sa_flags = SA_SIGINFO;
@@ -182,14 +178,9 @@ void tls_init()
 
     sigaction(SIGBUS, &sigact, NULL);
     sigaction(SIGSEGV, &sigact, NULL);
-
-    //Define the elements of the hash table as all NULL pointers
-    /*int i;
-    for (i = 0; i < NUM_THREADS; i++)
-    {
-        hashTable[i]->lsa = NULL;
-        hashTable[i]->next = NULL;
-    }*/
+    
+    /* get the size of a page */
+    pageSize = getpagesize();
 }
 
 //Create a LSA that can hold at least size bytes
@@ -229,6 +220,7 @@ extern int tls_create(unsigned int size)
     for (i = 0; i < threadLSA->pageNum; i++)
     {
         struct page* p = (struct page*) malloc(sizeof(struct page));
+        
         //Use mmap to map the page to a given place in memory.
         p->address = (uintptr_t) mmap(0, pageSize, 0, (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
         if (p->address == (uintptr_t) MAP_FAILED)
@@ -313,13 +305,14 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
     int i;
     pthread_t threadID = pthread_self();
 
-    //Get the LSA we are writing to
+    //Get the hash_element we are writing to
     struct hash_element* threadHash = findHashElement(threadID);
 
     //Check that there is a LSA for this thread
     if (threadHash == NULL)
         return FAILURE;
-
+    
+    //Get the LSA from the hash_element
     struct LSA* threadLSA = threadHash->lsa;
     
     //Check that the function didn't ask to write more data than LSA can hold
@@ -344,8 +337,6 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
         pn = idx / pageSize;
         poff = idx % pageSize;
         p = threadLSA->pages[pn];
-        
-        //printf("p->address after: %zd\n", p->address);
 
         /* If this page is shared, create a private copy (COW) */
         if (p->ref_count > 1) 
@@ -388,13 +379,13 @@ extern int tls_read(unsigned int offset, unsigned int length, char *buffer)
     //Check that there is a LSA for this thread
     if (threadHash == NULL)
         return FAILURE;
-
+    
+    //Get the LSA from the hash_element
     struct LSA* threadLSA = threadHash->lsa;
     
     //Check that the function didn't ask to read more data than LSA can hold
     if ((offset + length) > threadLSA->size)
-        return FAILURE;
-        
+        return FAILURE;  
     
     //Change the protection on the whole LSA to be able to read from it
     for (i = 0; i < threadLSA->pageNum; i++)
