@@ -1,4 +1,4 @@
-override CFLAGS := -Wall -Werror -std=gnu11 -pedantic -O0 -g $(CFLAGS) # or whatever your build needs
+override CFLAGS := -Wall -Werror -std=gnu11 -pedantic -O0 -g $(CFLAGS) 
 override LDLIBS := -lpthread $(LDLIBS)
 
 tls.o: tls.c tls.h
@@ -25,4 +25,4 @@ check: checkprogs
 	test/run_tests.sh $(test_files:.c=)
 
 clean:
-	rm -f $(test_files:.c=) $(test_files:.c=.o) *.o
+	rm -f $(test_files:.c=) $(test_files:.c=.o) $(test_files:.c=.gcno) $(test_file:.c].gcda) tls.gcno tls.gcda *.o

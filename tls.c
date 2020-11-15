@@ -160,7 +160,7 @@ void pageFaultHandler(int sig, siginfo_t *si, void *context)
             }             
         }
     }
-    
+
     //else install default handlers and reraise the signal
     signal(SIGSEGV, SIG_DFL);
     signal(SIGBUS, SIG_DFL);
@@ -345,6 +345,8 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
         poff = idx % pageSize;
         p = threadLSA->pages[pn];
         
+        //printf("p->address after: %zd\n", p->address);
+
         /* If this page is shared, create a private copy (COW) */
         if (p->ref_count > 1) 
         {
@@ -352,19 +354,12 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
             copy = (struct page *) malloc(sizeof(struct page));
             copy->address = (uintptr_t) mmap(0, pageSize, PROT_WRITE, (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
             copy->ref_count= 1;
-            //printf("copy->address: %zd\n", copy->address);
-            //printf("threadLSA->pages[pn]->address before: %zd\n", threadLSA->pages[pn]->address);
-            //printf("threadLSA contents before: %c\n", *((char *) threadLSA->pages[pn]->address));
             threadLSA->pages[pn] = copy;
-            //printf("threadLSA->pages[pn]->address after: %zd\n", threadLSA->pages[pn]->address);
-            //printf("threadLSA contents after: %c\n", *((char *) threadLSA->pages[pn]->address));
+
             //update original page
             p->ref_count--;
-            //printf("p contents: %c\n", *((char *) p->address));
             tls_protect(p);
-            //printf("p->address before: %zd\n", p->address);
             p = copy;
-            //printf("p->address after: %zd\n", p->address);
         }
         
         //Then get the dst byte and set it equal to the corresponding char in buffer
@@ -441,17 +436,19 @@ extern int tls_clone(pthread_t tid)
     //Get the current hash element
     struct hash_element* currentHash = findHashElement(currentTID);
 
-    //Get the targetLSA
+    //Get the targetHash
     struct hash_element* targetHash = findHashElement(tid);
-    struct LSA* targetLSA = targetHash->lsa;
 
     //Check that there is not a LSA for this thread
     if (currentHash != NULL)
         return FAILURE;
 
     //Check that the target thread has an LSA
-    if (targetLSA == NULL)
+    if (targetHash == NULL)
         return FAILURE;
+
+    //Get the targetLSA if the hash exists
+    struct LSA* targetLSA = targetHash->lsa;
 
     //Create the struct to hold the hash_element for the thread
     currentHash = (struct hash_element*) malloc(sizeof(struct hash_element));
