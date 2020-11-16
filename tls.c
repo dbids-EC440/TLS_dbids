@@ -433,11 +433,15 @@ extern int tls_clone(pthread_t tid)
 
     //Check that there is not a LSA for this thread
     if (currentHash != NULL)
+    {
         return FAILURE;
-
+    }
     //Check that the target thread has an LSA
     if (targetHash == NULL)
+    {
         return FAILURE;
+    }
+        
 
     //Get the targetLSA if the hash exists
     struct LSA* targetLSA = targetHash->lsa;
