@@ -3,7 +3,7 @@
 
 For this project we were tasked with implementing thread local storage.  At the highest level this meant defining the five functions, tls_create, tls_destroy, tls_write, tls_read, and tls_clone.
 
-...........................Structs...................................
+## ...........................Structs...................................
 #### `struct page`
   This struct is used to store a single page of memory.  It has two member variables, one which stores the base address of the page, and another which counts the number of threads whose LSA points to the given page.
   
@@ -13,7 +13,7 @@ For this project we were tasked with implementing thread local storage.  At the 
 #### `struct hash_element`
   This struct holds a given hash_element into the hash table that was implemented herein to store all of the LSA's.  The reason for this decision, is that it was the most effective way to deal with the extremly high pthread_t values that I was recieving from the default -lpthread library.  The hash element contains the tid of the thread whose hash element it is.  Additionally it contains a pointer to the LSA for the given thread.  Finally it contains a pointer to another hash_element, used to implement chaining at a given index in the hash table, thereby dealing with any possible collisions.
   
-...........................Hash Functions...................................
+## ...........................Hash Functions...................................
 #### `unsigned int computeHash(pthread_t tid)`
   This is a simple function which computes the index into the hash table simply by doing (tid)mod127, where 127 is the largest prime number which is less than the max number of concurrent threads(128).
   
@@ -33,7 +33,7 @@ For this project we were tasked with implementing thread local storage.  At the 
 #### `tls_init()`
   This function is called the first time tls_create is called, and it initialized the handler for the segmentation fault by setting the sa_sigaction member of the sigaction struct to refer to the pageFaultHandler.  sa_sigaction is used and the SA_SIGINFO flag are set because we need the siginfo to know the address of the thread within the pageFaultHandler function.  Additionally, the pageSize global variable is defined using the getpagesize() funtion.
   
-...........................TLS Functions...................................
+## ...........................TLS Functions...................................
 ### `extern int tls_create(unsigned int size)`
   This function at the highest level, creates a TLS for a given thread of size (in bytes).  First it calles tls_init the first time tls_create is called.  Then it checks if size > 0 and if thread has an LSA already.  Then a LSA defined and memory is allocated using malloc.  The size of the LSA is set to the size input and the pageNum is defined as the ceiling of the division between the size and the pageSize (so mmap allocates enough space).  The the pages pointer is iterated through, allocating space for each page and assigning that page an address in physical memory provided by the mmap function. All of the pages have their ref_count set to 1 as they are only pointed to by this LSA.  Then the hash element for the LSA is created and the lsa and tid elements are defined.  The hash element is then inserted into the hash table, and if successfully inserted it returns 0.
   
@@ -47,7 +47,7 @@ For this project we were tasked with implementing thread local storage.  At the 
   This simply uses mprotect to unprotect a given page either to allow for writing or reading depending on the value of the readWrite int (either set to PROT_READ or PROT_WRITE).
   
 ### `extern int tls_write(unsigned int offset, unsigned int length, char *buffer)` 
-  This function reads length bytes starting at memory location pointed to by buffer, and writes them to LSA.  First it finds the appropriate hash_element and checks that it exists in the table.  Then it gets the LSA from the hash_element and checks that the function did not ask us to write more data than the LSA can hold.  If everything checks out tls_unprotect is called to allow for writing to the whole LSA.  Then the write operation is used, writing to the pages a single character at a time.  If the pages are shared (i.e. ref_cout > 1) then the write operation makes a new page, assigns that page to this LSA and decrements the ref_count of the original page and protects the original page.  In this way copy on write is implemented.  Finally all of the pages are protected and the function returns.
+  This function reads length bytes starting at memory location pointed to by buffer, and writes them to LSA.  First it finds the appropriate hash_element and checks that it exists in the table.  Then it gets the LSA from the hash_element and checks that the function did not ask us to write more data than the LSA can hold.  If everything checks out tls_unprotect is called to allow for writing to the whole LSA.  Then the write operation is used, writing to the pages a single character at a time.  If the pages are shared (i.e. ref_cout > 1) then the write operation makes a new page, assigns that page to this LSA, copys the contents of the original page to this page, and decrements the ref_count of the original page and protects the original page.  In this way copy on write is implemented.  Finally all of the pages are protected and the function returns.
   
 ### `extern int tls_read(unsigned int offset, unsigned int length, char *buffer)`
   This function reads length bytes from LSA at offset and writes them to buffer.  First it finds the hash element in the hash table by using the threads tid.  Then it checks that the hash_element existed, and if so finds the LSA.  It checks that the pages we were asked to read do not exceed the bounds of the LSA.  Then it unprotects all of the pages in the LSA so that we can read from them.  Then it reads from them, copying the information character by character to the output buffer.  Finally it reprotects all of the pages.

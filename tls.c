@@ -292,7 +292,7 @@ void tls_protect(struct page *p)
 //readWrite == 1 -> read  (PROT_READ)
 void tls_unprotect(struct page *p, const int readWrite)
 {
-    if (mprotect((void *) p->address, pageSize, readWrite)) 
+    if (mprotect((void *) p->address, pageSize, readWrite )) 
     {
         fprintf(stderr, "tls_unprotect: could not unprotect page\n");
         exit(1);
@@ -344,6 +344,7 @@ extern int tls_write(unsigned int offset, unsigned int length, char *buffer)
             //copy existing page
             copy = (struct page *) malloc(sizeof(struct page));
             copy->address = (uintptr_t) mmap(0, pageSize, PROT_WRITE, (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
+            memcpy((void*) copy->address, (void*)p->address, pageSize);
             copy->ref_count= 1;
             threadLSA->pages[pn] = copy;
 

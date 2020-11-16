@@ -25,4 +25,4 @@ check: checkprogs
 	test/run_tests.sh $(test_files:.c=)
 
 clean:
-	rm -f $(test_files:.c=) $(test_files:.c=.o) $(test_files:.c=.gcno) $(test_file:.c].gcda) tls.gcno tls.gcda *.o
+	rm -f $(test_files:.c=) $(test_files:.c=.o) $(test_files:.c=.gcno) $(test_files:.c=.gcda) tls.gcno tls.gcda *.o *.html
