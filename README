@@ -1,5 +1,4 @@
-# Project 4 README by Devin Bidstrup
-### Written for Boston University EC440: Introduction to Operating Systems
+# Thread Local Storage by Devin Bidstrup
 
 For this project we were tasked with implementing thread local storage.  At the highest level this meant defining the five functions, tls_create, tls_destroy, tls_write, tls_read, and tls_clone.
 
